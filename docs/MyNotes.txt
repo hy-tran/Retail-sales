@@ -31,3 +31,6 @@ WHERE ROWNUM <= 10;
 
 -next create dimension tables and fact table
 
+create a venv for python to install lib oracledb
+
+
