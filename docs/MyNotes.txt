@@ -1,0 +1,31 @@
+- run oracle database with docker image container registry.oracle 21.3
+-docker run -d --name oracle21c \
+  -p 1521:1521 -p 5500:5500 \
+  -e ORACLE_PWD=secret \
+  -v ~/repo/retail-sale:/opt/retail \
+  container-registry.oracle.com/database/enterprise:21.3.0.0
+(here the retail-sale is mount to opt/retail)
+- docker exec -it oracle21c bash
+- sqlplus SYSTEM/secret
+- SQL> connect SYSTEM/secret@ORCLPDB1;
+- alter session container to ORCLPDB1 : ALTER SESSION SET CONTAINER=ORCLPDB1; to create user : CREATE USER retail_dwh IDENTIFIED BY secret; GRANT CONNECT, RESOURCE TO retail_dwh;
+- SQL> CONNECT retail_dwh/secret@ORCLPDB1 to connect as user
+- To run sql file, for example : SQL> @/opt/retail/plsql/01_staging.sql
+- to see all table : SQL> select table_name from user_tables;
+
+-Tables live in tablespaces
+Users must have quota on tablespaces
+login as system sqlplus SYSTEM/secret@ORCLPDB1
+ALTER USER retail_dwh DEFAULT TABLESPACE USERS;
+ALTER USER retail_dwh QUOTA UNLIMITED ON USERS;
+
+-Create /tmp so SQL*Loader running as retail_dwh can create files (777)
+sqlldr retail_dwh/secret@ORCLPDB1 \
+control=/opt/retail/plsql/load_staging.ctl \
+log=/tmp/load_staging.log \
+bad=/tmp/load_staging.bad
+
+-to check : 
+SELECT * FROM STG_RETAIL_TRANSACTIONS
+WHERE ROWNUM <= 10;
+
