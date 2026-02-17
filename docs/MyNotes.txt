@@ -29,3 +29,5 @@ bad=/tmp/load_staging.bad
 SELECT * FROM STG_RETAIL_TRANSACTIONS
 WHERE ROWNUM <= 10;
 
+-next create dimension tables and fact table
+
