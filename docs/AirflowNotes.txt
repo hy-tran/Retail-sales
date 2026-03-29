@@ -1,0 +1,128 @@
+APACHE AIRFLOW SETUP & RUNNING NOTES
+=====================================
+
+WHAT IS AIRFLOW?
+- Airflow is a tool to schedule and monitor data pipelines
+- You define a DAG (Directed Acyclic Graph) — a set of tasks with a defined order
+- Instead of running etl_pipeline.py manually, Airflow runs it on a schedule and shows you a visual graph of each step
+- If one task fails, only that task reruns — not the whole pipeline
+- Has a web UI at localhost:8080 to monitor runs, see logs, trigger manually
+
+
+OUR DAGS
+- retail_full_etl        : drops all tables, recreates schema, loads full CSV, populates dims + fact (same as etl_pipeline.py but broken into steps)
+- retail_incremental_load: loads only rows matching a specific date, uses MERGE on dims, appends to fact table (does NOT drop tables)
+
+
+AIRFLOW_HOME
+- Airflow stores its config, database, and logs in a folder called AIRFLOW_HOME
+- We set it to ~/airflow
+- Every terminal that runs an airflow command must have this set first:
+    export AIRFLOW_HOME=~/airflow
+- Also need the venv active for airflow command to be found:
+    source ~/repo/retail-sale/venv/bin/activate
+
+
+STEP 1 — INITIALIZE AIRFLOW (run once)
+---------------------------------------
+export AIRFLOW_HOME=~/airflow
+source ~/repo/retail-sale/venv/bin/activate
+
+airflow db migrate
+(creates ~/airflow/airflow.db — a SQLite database Airflow uses to track DAG runs and task states)
+
+sed -i "s|dags_folder = .*|dags_folder = /home/bhtran/repo/retail-sale/dags|" ~/airflow/airflow.cfg
+(tells Airflow where to find our DAG files — by default it looks in ~/airflow/dags)
+
+airflow users create \
+  --username admin --password admin \
+  --firstname Admin --lastname User \
+  --role Admin --email admin@example.com
+(creates the login for the web UI)
+
+
+run this if UI port 8080 is broken (to disable example )
+sed -i "s/load_examples = True/load_examples = False/" ~/airflow/airflow.cfg
+
+
+STEP 2 — START AIRFLOW (two terminals needed)
+----------------------------------------------
+Airflow needs two processes running at the same time:
+  - webserver : serves the UI at localhost:8080
+  - scheduler : watches for DAGs to trigger and sends tasks to run
+
+Terminal 1 — Web UI:
+    export AIRFLOW_HOME=~/airflow
+    source ~/repo/retail-sale/venv/bin/activate
+    airflow webserver --port 8080
+
+Terminal 2 — Scheduler:
+    export AIRFLOW_HOME=~/airflow
+    source ~/repo/retail-sale/venv/bin/activate
+    airflow scheduler
+
+Open browser: http://localhost:8080  (login: admin / admin)
+
+
+STEP 3 — RUN DAG 1 (full ETL)
+-------------------------------
+export AIRFLOW_HOME=~/airflow
+source ~/repo/retail-sale/venv/bin/activate
+
+airflow dags trigger retail_full_etl
+
+This does exactly what etl_pipeline.py did, but:
+- Dimension tasks (DIM_CUSTOMER, DIM_PRODUCT, DIM_DATE) run in parallel
+- Each task has its own log viewable in the UI
+- validate_load task at the end checks row counts and revenue — fails the run if mismatch
+
+
+STEP 4 — RUN DAG 2 (incremental, with test data)
+--------------------------------------------------
+DAG 2 loads only rows matching a specific date from the CSV.
+Test file data/test_incremental.csv has 3 rows dated 2026-03-28.
+
+Set the CSV path variable so DAG 2 reads the test file instead of the full dataset:
+    airflow variables set RETAIL_CSV_PATH /home/bhtran/repo/retail-sale/data/test_incremental.csv
+
+Trigger for the test date:
+    airflow dags trigger retail_incremental_load --exec-date 2026-03-28
+
+-- may be the dags is in queued not run. (maybe i run on 29-03 not 28)
+
+{{ ds }} in the DAG code is Airflow's execution date — it becomes "2026-03-28" here.
+This filters the CSV and all SQL queries to only that date.
+
+
+STEP 5 — VERIFY IN SQLPLUS
+----------------------------
+docker exec -it oracle21c sqlplus retail_dwh/secret@ORCLPDB1
+
+-- 3 rows should exist for the test date
+SELECT COUNT(*) FROM STG_RETAIL_TRANSACTIONS WHERE TRANSACTION_DATE = DATE '2026-03-28';
+
+-- CUST_TEST01 appears twice in test CSV but MERGE inserts it only once
+SELECT * FROM DIM_CUSTOMER WHERE CUSTOMER_ID LIKE 'CUST_TEST%';
+
+-- 3 fact rows for the test date
+SELECT COUNT(*) FROM FACT_SALES f
+JOIN DIM_DATE d ON f.DATE_KEY = d.DATE_KEY
+WHERE d.FULL_DATE = DATE '2026-03-28';
+
+
+AIRFLOW VARIABLES (db.py reads these)
+---------------------------------------
+Variables let you change config without touching code.
+Set them via CLI or UI (Admin > Variables):
+
+    airflow variables set ORACLE_USER retail_dwh
+    airflow variables set ORACLE_PASSWORD secret
+    airflow variables set ORACLE_DSN localhost:1521/ORCLPDB1
+    airflow variables set RETAIL_CSV_PATH /path/to/file.csv
+
+If not set, db.py falls back to the hardcoded dev defaults automatically.
+To use the full dataset again, delete the RETAIL_CSV_PATH variable:
+    airflow variables delete RETAIL_CSV_PATH
+
+
+-- in production, these things run automatically

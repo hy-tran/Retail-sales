@@ -8,13 +8,19 @@ An Oracle data warehouse project that implements a **star schema** for retail sa
 
 ```
 retail-sale/
+├── dags/
+│   ├── db.py                      # Shared Oracle connection helper
+│   ├── retail_full_etl_dag.py     # Airflow DAG: full drop/recreate/load
+│   └── retail_incremental_dag.py  # Airflow DAG: daily incremental load
 ├── data/
-│   └── retail_sales_dataset.csv   # 1,000 retail transactions (2023)
+│   ├── retail_sales_dataset.csv   # 1,000 retail transactions (2023)
+│   └── test_incremental.csv       # 3 test rows dated 2026-03-28 (for DAG 2 testing)
 ├── docs/
-│   ├── MyNotes.txt                # Setup and configuration notes
+│   ├── AirflowNotes.txt           # Airflow setup and running notes
+│   ├── MyNotes.txt                # Oracle setup and configuration notes
 │   └── star_schema.png            # Star schema diagram
 ├── etl/
-│   └── etl_pipeline.py            # Python ETL: drop → create → load → transform
+│   └── etl_pipeline.py            # Python ETL: drop → create → load → transform (manual)
 └── plsql/
     ├── 01_staging.sql             # Create staging table
     ├── 02_dimension.sql           # Create & populate dimension tables
@@ -150,6 +156,65 @@ sqlldr retail_dwh/secret@ORCLPDB1 \
   log=/tmp/load_staging.log \
   bad=/tmp/load_staging.bad
 ```
+
+---
+
+## Apache Airflow DAGs
+
+Two DAGs are available in `dags/` for scheduled and automated pipeline execution. See `docs/AirflowNotes.txt` for full setup steps.
+
+### DAG 1 — `retail_full_etl`
+
+A full reload: drops all tables, recreates schema, loads the entire CSV, and populates all dimension and fact tables. Equivalent to running `etl_pipeline.py` manually, but with scheduling, per-task logging, and a validation step.
+
+Dimension tasks run **in parallel** — Airflow fires them simultaneously once staging is loaded.
+
+```
+drop_tables → create_tables → load_csv_to_staging
+                                       |
+              [load_dim_customer, load_dim_product, load_dim_date]  ← parallel
+                                       |
+                               load_fact_sales → validate_load
+```
+
+### DAG 2 — `retail_incremental_load`
+
+Loads only rows matching the execution date (`{{ ds }}`). Uses Oracle `MERGE` on dimension tables to insert new values without creating duplicates. Appends to `FACT_SALES` — historical data is preserved.
+
+Requires DAG 1 to have run at least once (schema must exist).
+
+```
+check_schema_exists → extract_daily_slice
+                              |
+         [merge_dim_customer, merge_dim_product, merge_dim_date]  ← parallel
+                              |
+                       append_fact_sales → validate_daily_load
+```
+
+### Running the DAGs
+
+```bash
+export AIRFLOW_HOME=~/airflow
+source venv/bin/activate
+
+# Trigger full ETL
+airflow dags trigger retail_full_etl
+
+# Trigger incremental load for a specific date
+airflow variables set RETAIL_CSV_PATH /home/bhtran/repo/retail-sale/data/test_incremental.csv
+airflow dags trigger retail_incremental_load --exec-date 2026-03-28
+```
+
+### `dags/db.py` — Connection Helper
+
+Reads Oracle credentials and the CSV path from Airflow Variables, falling back to hardcoded dev defaults if not set. Used by both DAGs to avoid duplicating connection logic.
+
+| Variable | Default |
+|---|---|
+| `ORACLE_USER` | `retail_dwh` |
+| `ORACLE_PASSWORD` | `secret` |
+| `ORACLE_DSN` | `localhost:1521/ORCLPDB1` |
+| `RETAIL_CSV_PATH` | `data/retail_sales_dataset.csv` |
 
 ---
 

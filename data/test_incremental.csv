@@ -1,0 +1,4 @@
+Transaction ID,Date,Customer ID,Gender,Age,Product Category,Quantity,Price per Unit,Total Amount
+1001,2026-03-28,CUST_TEST01,Female,31,Beauty,2,50,100
+1002,2026-03-28,CUST_TEST02,Male,45,Electronics,1,200,200
+1003,2026-03-28,CUST_TEST01,Female,31,Clothing,3,30,90
